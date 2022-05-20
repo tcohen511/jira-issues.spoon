@@ -34,7 +34,7 @@ local function styledText(text)
 end
 
 local function updateMenu()
-    local jira_url = obj.jira_host .. '/rest/api/2/search?jql=' .. hs.http.encodeForQuery(obj.jql) .. '&fields=id,assignee,summary,status'
+    local jira_url = obj.jira_host .. '/rest/api/2/search?jql=' .. hs.http.encodeForQuery(obj.jql) .. '&fields=id,assignee,summary,status,issuetype,parent'
     hs.http.asyncGet(jira_url, {Authorization = auth_header}, function(status, body)
         obj.jira_menu = {}
 
@@ -47,57 +47,47 @@ local function updateMenu()
         obj.indicator:setTitle(#issues)
     
         table.sort(issues, function(left, right) return left.fields.status.name < right.fields.status.name end)
-    
-        local cur_status = ''
+
+        -- Organize issues
+        local epics = {}
+        local issues_by_epic = {}
+        local other_issues = {}
         for _, issue in ipairs(issues) do
-            if cur_status ~= issue.fields.status.name then
-                table.insert(obj.jira_menu, { title = '-'})
-                table.insert(obj.jira_menu, { title = issue.fields.status.name, disabled = true})
-                cur_status = issue.fields.status.name
+            if issue.fields.issuetype.name == 'Epic' then
+                table.insert(epics, issue)
+                issues_by_epic[issue.key] = {}
             end
-            
-            local avatar = (issue.fields.assignee == nil)
-                and hs.image.imageFromPath(obj.iconPath .. '/unassigned.png')
-                or hs.image.imageFromURL(issue.fields.assignee.avatarUrls['32x32']):setSize({w=32,h=32})
-            local assignee_name = (issue.fields.assignee == nil)
-                and styledText('Unassigned')
-                or styledText(issue.fields.assignee.displayName)
-            
-            local transitions_url = obj.jira_host .. '/rest/api/2/issue/' .. issue.key .. '/transitions'
-            
-            local transitions_submenu = {}
-            hs.http.asyncGet(transitions_url, {Authorization = auth_header}, function(status, body)
-
-                if status ~= 200 then
-                    show_warning(status, body)
+        end
+        for _, issue in ipairs(issues) do
+            if issue.fields.issuetype.name ~= 'Epic' then
+                if issue.fields.parent ~= nil and issues_by_epic[issue.fields.parent.key] ~= nil then
+                    table.insert(issues_by_epic[issue.fields.parent.key], issue)
                 else
-                    local transitions = hs.json.decode(body).transitions
-                    for _, transition in ipairs(transitions) do
-                        local transition_payload = string.format([[{ "transition": { "id": "%s" } }]], transition.id)
-                        local header = {Authorization = auth_header}
-                        header['content-type'] = 'application/json'
-                        table.insert(transitions_submenu, {
-                            image = hs.image.imageFromURL(transition.to.iconUrl):setSize({w=16,h=16}),
-                            title = transition.name,
-                            fn = function() hs.http.asyncPost(transitions_url, transition_payload, header, function(status, body) 
-                                if status ~= 204 then
-                                    show_warning(status, body)
-                                end
-                                updateMenu() end) 
-                            end
-                        })
-                    end
+                    table.insert(other_issues, issue)
                 end
-            end)
+            end
+        end
 
-            table.insert(obj.jira_menu, {
-                image = avatar,
-                title = hs.styledtext.new(' ' .. issue.fields.summary .. '\n')
-                    .. ticket_icon .. styledText(issue.key .. '   ')
-                    .. user_icon .. assignee_name,
-                menu = transitions_submenu,
-                fn = function() os.execute(string.format('open %s/browse/%s', obj.jira_host, issue.key)) end
-            })
+        -- Add issues to table
+        local cur_status = ''
+        for _, epic in ipairs(epics) do
+            if cur_status ~= epic.fields.status.name then
+                table.insert(obj.jira_menu, { title = '-'})
+                table.insert(obj.jira_menu, { title = epic.fields.status.name, disabled = true})
+                cur_status = epic.fields.status.name
+            end
+            obj:insertIssueRow(epic)
+
+            for _, issue in ipairs(issues_by_epic[epic.key]) do
+                obj:insertIssueRow(issue)
+            end
+        end
+        if other_issues ~= {} then
+            table.insert(obj.jira_menu, { title = '-'})
+            table.insert(obj.jira_menu, { title = 'No Epic', disabled = true})
+            for _, issue in ipairs(other_issues) do
+                obj:insertIssueRow(issue)
+            end
         end
         
         table.insert(obj.jira_menu, { title = '-' })
@@ -123,6 +113,54 @@ local function updateMenu()
             title = 'Check for updates', 
             fn = function() obj:check_for_updates() end})
     end)
+end
+
+function obj:insertIssueRow(issue)
+    local avatar = (issue.fields.assignee == nil)
+        and hs.image.imageFromPath(obj.iconPath .. '/unassigned.png')
+        or hs.image.imageFromURL(issue.fields.assignee.avatarUrls['32x32']):setSize({w=32,h=32})
+    local assignee_name = (issue.fields.assignee == nil)
+        and styledText('Unassigned')
+        or styledText(issue.fields.assignee.displayName)
+    
+    local transitions_url = obj.jira_host .. '/rest/api/2/issue/' .. issue.key .. '/transitions'
+    
+    local transitions_submenu = {}
+    hs.http.asyncGet(transitions_url, {Authorization = auth_header}, function(status, body)
+
+        if status ~= 200 then
+            show_warning(status, body)
+        else
+            local transitions = hs.json.decode(body).transitions
+            for _, transition in ipairs(transitions) do
+                local transition_payload = string.format([[{ "transition": { "id": "%s" } }]], transition.id)
+                local header = {Authorization = auth_header}
+                header['content-type'] = 'application/json'
+                local image = hs.image.imageFromURL(transition.to.iconUrl)
+                if image ~= nil then
+                    image = image:setSize({w=16,h=16})
+                end                        
+                table.insert(transitions_submenu, {
+                    image = image,
+                    title = transition.name,
+                    fn = function() hs.http.asyncPost(transitions_url, transition_payload, header, function(status, body) 
+                        if status ~= 204 then
+                            show_warning(status, body)
+                        end
+                        updateMenu() end) 
+                    end
+                })
+            end
+        end
+    end)
+
+    table.insert(obj.jira_menu, {
+        -- image = issue.fields.issuetype.name == 'Epic' and avatar,
+        title = styledText((issue.fields.issuetype.name == 'Epic' and '' or '     ') .. issue.key .. ' ')
+            .. hs.styledtext.new(' ' .. issue.fields.summary),        
+        menu = transitions_submenu,
+        fn = function() os.execute(string.format('open %s/browse/%s', obj.jira_host, issue.key)) end
+    })
 end
 
 function obj:check_for_updates()
