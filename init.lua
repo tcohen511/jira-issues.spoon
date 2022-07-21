@@ -116,13 +116,6 @@ local function updateMenu()
 end
 
 function obj:insertIssueRow(issue)
-    local avatar = (issue.fields.assignee == nil)
-        and hs.image.imageFromPath(obj.iconPath .. '/unassigned.png')
-        or hs.image.imageFromURL(issue.fields.assignee.avatarUrls['32x32']):setSize({w=32,h=32})
-    local assignee_name = (issue.fields.assignee == nil)
-        and styledText('Unassigned')
-        or styledText(issue.fields.assignee.displayName)
-    
     local transitions_url = obj.jira_host .. '/rest/api/2/issue/' .. issue.key .. '/transitions'
     
     local transitions_submenu = {}
@@ -155,7 +148,6 @@ function obj:insertIssueRow(issue)
     end)
 
     table.insert(obj.jira_menu, {
-        -- image = issue.fields.issuetype.name == 'Epic' and avatar,
         title = styledText((issue.fields.issuetype.name == 'Epic' and '' or '     ') .. issue.key .. ' ')
             .. hs.styledtext.new(' ' .. issue.fields.summary),        
         menu = transitions_submenu,
